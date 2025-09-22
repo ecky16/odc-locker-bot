@@ -1,13 +1,13 @@
 import { google } from "googleapis";
 export async function setupSheets() {
-await ensureHeaders(TAB_WHITELIST, ["telegram_id","nama","role"]);
-await ensureHeaders(TAB_TOKENS, [
+await ensureHeaders(whitelist, ["telegram_id","nama","role"]);
+await ensureHeaders(tokens, [
 "token","nama_teknisi","nama_odc","keperluan","requester_id","status","issued_at","expires_at","used_at"
 ]);
-await ensureHeaders(TAB_STATE, [
+await ensureHeaders(state, [
 "chat_id","step","requester_id","nama_teknisi","nama_odc","keperluan","updated_at"
 ]);
-await ensureHeaders(TAB_LOGS, ["time","actor","action","detail"]);
+await ensureHeaders(logs, ["time","actor","action","detail"]);
 }
 
 
@@ -36,7 +36,7 @@ return { header, rows };
 
 export async function findAndUpdateToken({ token, odc, toStatus, usedAt }) {
 const api = sheets();
-const { header, rows } = await readAll(TAB_TOKENS);
+const { header, rows } = await readAll(tokens);
 const idx = Object.fromEntries(header.map((h, i) => [h, i]));
 let rowIndex = -1;
 for (let r = 0; r < rows.length; r++) {
@@ -47,8 +47,8 @@ break;
 }
 }
 if (rowIndex === -1) return false;
-const statusRange = `${TAB_TOKENS}!F${rowIndex}`; // status
-const usedAtRange = `${TAB_TOKENS}!I${rowIndex}`; // used_at
+const statusRange = `${tokens}!F${rowIndex}`; // status
+const usedAtRange = `${tokens}!I${rowIndex}`; // used_at
 const data = [
 { range: statusRange, values: [[toStatus]] },
 ...(usedAt ? [{ range: usedAtRange, values: [[usedAt]] }] : [])
@@ -61,4 +61,4 @@ return true;
 }
 
 
-export const tabs = { TAB_WHITELIST, TAB_TOKENS, TAB_STATE, TAB_LOGS };
+export const tabs = { whitelist, tokens, state, logs };

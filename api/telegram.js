@@ -1,184 +1,96 @@
-export const config = { runtime: "nodejs18.x" }; // WAJIB, bukan Edge
+// api/telegram.js
+import { setupSheets, isAllowed, issueToken, consumeToken } from "./_sheets.js";
 
-// /api/telegram.js — Vercel + Google Sheets (process-first)
-import { setupSheets, appendRow, readAll, tabs } from "./_sheets.js";
-import { sendMessage } from "./_tg.js";
-
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const TOKEN_TTL_MIN = Number(process.env.TOKEN_TTL_MIN || "3");
-
-const nowIso = () => new Date().toISOString();
-const rnd4 = () => String(Math.floor(1000 + Math.random() * 9000)); // 1000..9999
-
-async function isAllowed(userId) {
-  const { header, rows } = await readAll(tabs.TAB_WHITELIST);
-  const idx = Object.fromEntries(header.map((h, i) => [h, i]));
-  for (const r of rows) {
-    const v = String((r[idx.telegram_id] || "")).trim().replace(/\.0$/, "");
-    if (v && v === String(userId)) return true;
-  }
-  return false;
-}
-
-async function getState(chatId) {
-  const { header, rows } = await readAll(tabs.TAB_STATE);
-  const idx = Object.fromEntries(header.map((h, i) => [h, i]));
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const r = rows[i];
-    if (String(r[idx.chat_id]) === String(chatId)) {
-      return {
-        step: r[idx.step] || null,
-        data: {
-          requesterId: r[idx.requester_id] || "",
-          nama_teknisi: r[idx.nama_teknisi] || "",
-          nama_odc: r[idx.nama_odc] || "",
-          keperluan: r[idx.keperluan] || ""
-        }
-      };
-    }
-  }
-  return { step: null, data: {} };
-}
-
-async function setState(chatId, state) {
-  await appendRow(tabs.TAB_STATE, [
-    String(chatId),
-    state.step || "",
-    state.data?.requesterId || "",
-    state.data?.nama_teknisi || "",
-    state.data?.nama_odc || "",
-    state.data?.keperluan || "",
-    nowIso()
-  ]);
-}
-
-async function clearState(chatId) {
-  // append baris “kosong” biar historinya tetap ada
-  await setState(chatId, { step: null, data: {} });
-}
+export const config = { runtime: "nodejs18.x" };
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(200).send("OK");
-  }
-
   try {
-    if (!BOT_TOKEN) {
-      console.error("NO_BOT_TOKEN_ENV");
-      return res.status(500).send("NO_BOT_TOKEN");
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (req.method === "GET" && url.pathname.endsWith("/verify")) {
+      const token = url.searchParams.get("token") || "";
+      const odc = url.searchParams.get("odc") || "";
+      if (!token || !odc) return res.status(400).json({ ok:false, reason:"MISSING_PARAMS" });
+      const out = await consumeToken({ token, odc });
+      return res.status(200).json(out);
     }
 
-    // Pastikan header sheet ada
-    await setupSheets();
+    if (req.method !== "POST") return res.status(405).end();
 
-    const update = req.body || {};
-    const msg = update.message || update.callback_query?.message;
-    if (!msg) {
-      return res.status(200).send("OK"); // bukan pesan — aman diabaikan
+    const body = await readJson(req);
+    const msg = body?.message;
+    const chatId = msg?.chat?.id;
+    const text = (msg?.text || "").trim();
+    const userId = msg?.from?.id;
+
+    if (!chatId) return res.status(200).json({ ok:true });
+
+    if (text === "/ping") {
+      await send(chatId, "pong ✅"); // tanpa sentuh Sheets
+      return res.status(200).json({ ok:true });
     }
 
-    const chatId = msg.chat.id;
-    const userId = (update.message ? update.message.from.id : update.callback_query.from.id);
-    const text = (update.message?.text || "").trim();
-
-    // /start → kasih ID
-    if (text === "/start") {
-      await sendMessage(BOT_TOKEN, chatId,
-        `Halo! ID Telegram kamu: <code>${userId}</code>\nPakai /ambil_kunci untuk minta token.\n/batal untuk batalkan proses.`,
-        { parse_mode: "HTML" }
-      );
-      await appendRow(tabs.TAB_LOGS, [nowIso(), userId, "START", "-"]);
-      return res.status(200).send("OK");
+    if (text === "/start" || text === "/help") {
+      await send(chatId, "Gunakan /minta_kunci Nama;ODC;Keperluan (TTL 3 menit).");
+      return res.status(200).json({ ok:true });
     }
 
-    // /batal → reset state
-    if (text === "/batal") {
-      await clearState(chatId);
-      await sendMessage(BOT_TOKEN, chatId, "Proses dibatalkan. 🚫");
-      await appendRow(tabs.TAB_LOGS, [nowIso(), userId, "BATAL", "-"]);
-      return res.status(200).send("OK");
-    }
-
-    // /ambil_kunci → cek whitelist
-    if (text === "/ambil_kunci") {
-      const allowed = await isAllowed(userId);
-      if (!allowed) {
-        await sendMessage(BOT_TOKEN, chatId,
-          "Maaf, kamu tidak berwenang minta token. 🙏\n(Minta admin menambahkan ID-mu ke sheet whitelist)"
-        );
-        return res.status(200).send("OK");
+    if (text.startsWith("/minta_kunci")) {
+      await setupSheets(); // <-- panggil di dalam handler
+      if (!(await isAllowed(userId))) {
+        await send(chatId, "Maaf, kamu belum terdaftar di whitelist.");
+        return res.status(200).json({ ok:true });
       }
-      await setState(chatId, { step: "ASK_TEKNISI", data: { requesterId: String(userId) } });
-      await sendMessage(BOT_TOKEN, chatId, "Siapa <b>nama teknisi</b> yang akan ambil kunci?", { parse_mode: "HTML" });
-      return res.status(200).send("OK");
-    }
 
-    // flow tanya-jawab
-    const state = await getState(chatId);
+      const parsed = parse(text); // implement sendiri parser Nama;ODC;Keperluan
+      if (!parsed) {
+        await send(chatId, "Format salah. Contoh:\n/minta_kunci Budi;ODC-17;Maintenance");
+        return res.status(200).json({ ok:true });
+      }
 
-    if (state.step === "ASK_TEKNISI") {
-      state.data.nama_teknisi = text;
-      state.step = "ASK_ODC";
-      await setState(chatId, state);
-      await sendMessage(BOT_TOKEN, chatId, "Nama <b>ODC</b>-nya apa? (mis. ODC-PSN-14)", { parse_mode: "HTML" });
-      return res.status(200).send("OK");
-    }
+      const { nama_teknisi, nama_odc, keperluan } = parsed;
+      const { token, expires_at } = await issueToken({
+        requesterId: userId, nama_teknisi, nama_odc, keperluan, ttlMinutes: 3
+      });
 
-    if (state.step === "ASK_ODC") {
-      state.data.nama_odc = text.toUpperCase();
-      state.step = "ASK_KEPERLUAN";
-      await setState(chatId, state);
-      await sendMessage(BOT_TOKEN, chatId, "Keperluannya apa? (singkat jelas)");
-      return res.status(200).send("OK");
-    }
-
-    if (state.step === "ASK_KEPERLUAN") {
-      state.data.keperluan = text;
-
-      const issuedAt = new Date();
-      const expiresAt = new Date(issuedAt.getTime() + TOKEN_TTL_MIN * 60 * 1000);
-      const token = rnd4();
-
-      await appendRow(tabs.TAB_TOKENS, [
-        token,
-        state.data.nama_teknisi,
-        state.data.nama_odc,
-        state.data.keperluan,
-        state.data.requesterId,
-        "ISSUED",
-        issuedAt.toISOString(),
-        expiresAt.toISOString(),
-        ""
-      ]);
-      await clearState(chatId);
-
-      const expStr = expiresAt.toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta", hour12: false });
-      const msgToken =
-        `✅ <b>TOKEN KUNCI ODC</b>\n` +
+      await send(chatId,
         `Token: <code>${token}</code>\n` +
-        `Berlaku s/d: <b>${expStr} WIB</b>\n\n` +
-        `<b>Teknisi:</b> ${state.data.nama_teknisi}\n` +
-        `<b>ODC:</b> ${state.data.nama_odc}\n` +
-        `<b>Keperluan:</b> ${state.data.keperluan}\n\n` +
-        `Masukkan token di keypad / akan diverifikasi oleh perangkat.`;
-
-      await sendMessage(BOT_TOKEN, chatId, msgToken, { parse_mode: "HTML" });
-      await appendRow(tabs.TAB_LOGS, [nowIso(), state.data.requesterId, "ISSUE_TOKEN", JSON.stringify({ token, ...state.data })]);
-
-      return res.status(200).send("OK");
+        `Teknisi: ${nama_teknisi}\nODC: ${nama_odc}\nKeperluan: ${keperluan}\n` +
+        `Berlaku s/d: <code>${expires_at}</code> (±3 menit)`
+      );
+      return res.status(200).json({ ok:true });
     }
 
-    // fallback echo
-    if (text) {
-      await sendMessage(BOT_TOKEN, chatId, `echo: ${text}`);
-    }
-    return res.status(200).send("OK");
+    return res.status(200).json({ ok:true });
   } catch (e) {
     console.error("TELEGRAM_HANDLER_ERR", e);
-    try { await appendRow(tabs.TAB_LOGS, [nowIso(), "SYSTEM", "ERROR", String(e)]); } catch {}
-    return res.status(200).send("OK");
+    return res.status(200).json({ ok:true }); // biar Telegram gak spam retry
   }
 }
 
-export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };
+async function readJson(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { return {}; }
+}
+
+async function send(chatId, text) {
+  const token = process.env.BOT_TOKEN;
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+  });
+}
+
+function parse(text) {
+  const m = text.match(/^\/minta_kunci\s+(.+)$/i);
+  if (!m) return null;
+  const parts = m[1].split(";").map(s=>s.trim());
+  if (parts.length < 3) return null;
+  const [nama_teknisi, nama_odc, keperluan] = parts;
+  if (!nama_teknisi || !nama_odc || !keperluan) return null;
+  return { nama_teknisi, nama_odc, keperluan };
+}
 

@@ -1,12 +1,13 @@
-// api/telegram.js
-import { setupSheets, isAllowed, issueToken, consumeToken } from "./_sheets.js";
+export const config = { runtime: "nodejs" };
 
-export const config = { runtime: "nodejs18.x" };
+import { setupSheets, isAllowed, issueToken, consumeToken } from "./_sheets.js";
 
 export default async function handler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    if (req.method === "GET" && url.pathname.endsWith("/verify")) {
+
+    // Endpoint ESP: GET /api/telegram?verify&token=...&odc=...
+    if (req.method === "GET" && url.searchParams.has("verify")) {
       const token = url.searchParams.get("token") || "";
       const odc = url.searchParams.get("odc") || "";
       if (!token || !odc) return res.status(400).json({ ok:false, reason:"MISSING_PARAMS" });
@@ -25,7 +26,7 @@ export default async function handler(req, res) {
     if (!chatId) return res.status(200).json({ ok:true });
 
     if (text === "/ping") {
-      await send(chatId, "pong ✅"); // tanpa sentuh Sheets
+      await send(chatId, "pong ✅");
       return res.status(200).json({ ok:true });
     }
 
@@ -35,26 +36,26 @@ export default async function handler(req, res) {
     }
 
     if (text.startsWith("/minta_kunci")) {
-      await setupSheets(); // <-- panggil di dalam handler
+      await setupSheets(); // panggil di DALAM handler
       if (!(await isAllowed(userId))) {
         await send(chatId, "Maaf, kamu belum terdaftar di whitelist.");
         return res.status(200).json({ ok:true });
       }
-
-      const parsed = parse(text); // implement sendiri parser Nama;ODC;Keperluan
+      const parsed = parse(text);
       if (!parsed) {
-        await send(chatId, "Format salah. Contoh:\n/minta_kunci Budi;ODC-17;Maintenance");
+        await send(chatId, "Format salah.\nContoh: /minta_kunci Budi;ODC-17;Maintenance");
         return res.status(200).json({ ok:true });
       }
-
       const { nama_teknisi, nama_odc, keperluan } = parsed;
       const { token, expires_at } = await issueToken({
         requesterId: userId, nama_teknisi, nama_odc, keperluan, ttlMinutes: 3
       });
-
       await send(chatId,
+        `<b>KUNCI DITERBITKAN</b>\n` +
         `Token: <code>${token}</code>\n` +
-        `Teknisi: ${nama_teknisi}\nODC: ${nama_odc}\nKeperluan: ${keperluan}\n` +
+        `Teknisi: ${nama_teknisi}\n` +
+        `ODC: ${nama_odc}\n` +
+        `Keperluan: ${keperluan}\n` +
         `Berlaku s/d: <code>${expires_at}</code> (±3 menit)`
       );
       return res.status(200).json({ ok:true });
@@ -63,7 +64,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok:true });
   } catch (e) {
     console.error("TELEGRAM_HANDLER_ERR", e);
-    return res.status(200).json({ ok:true }); // biar Telegram gak spam retry
+    return res.status(200).json({ ok:true });
   }
 }
 
@@ -87,10 +88,7 @@ async function send(chatId, text) {
 function parse(text) {
   const m = text.match(/^\/minta_kunci\s+(.+)$/i);
   if (!m) return null;
-  const parts = m[1].split(";").map(s=>s.trim());
-  if (parts.length < 3) return null;
-  const [nama_teknisi, nama_odc, keperluan] = parts;
+  const [nama_teknisi, nama_odc, keperluan] = m[1].split(";").map(s=>s.trim());
   if (!nama_teknisi || !nama_odc || !keperluan) return null;
   return { nama_teknisi, nama_odc, keperluan };
 }
-

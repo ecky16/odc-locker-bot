@@ -1,23 +1,36 @@
-// _sheets.js
+// api/_sheets.js
 import { google } from "googleapis";
 
-// === KONFIG ===
-export const SPREADSHEET_ID = process.env.SPREADSHEET_ID; // wajib di-set di env
+export const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const SCOPE = ["https://www.googleapis.com/auth/spreadsheets"];
 
-// === NAMA TAB (string) ===
 export const tabs = {
   WHITELIST: "whitelist",
   TOKENS: "tokens",
   LOGS: "logs",
 };
 
-// === CLIENT ===
+// ---- Sheets client (singleton) dengan Service Account dari ENV ----
+let _sheetsClient = null;
 function sheets() {
-  const auth = new google.auth.GoogleAuth({ scopes: SCOPE });
-  return google.sheets({ version: "v4", auth });
+  if (_sheetsClient) return _sheetsClient;
+
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON");
+
+  // Hati-hati: ENV harus JSON valid
+  const creds = JSON.parse(raw);
+
+  const auth = new google.auth.GoogleAuth({
+    credentials: creds,
+    scopes: SCOPE,
+  });
+
+  _sheetsClient = google.sheets({ version: "v4", auth });
+  return _sheetsClient;
 }
 
+// ---- Helpers ----
 async function listSheetTitles() {
   const api = sheets();
   const meta = await api.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
@@ -38,13 +51,16 @@ async function ensureSheetExists(title) {
 export async function ensureHeaders(tabName, headers) {
   const api = sheets();
   await ensureSheetExists(tabName);
+
   const resp = await api.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: `${tabName}!A1:Z1`,
   });
+
   const current = (resp.data.values && resp.data.values[0]) || [];
   const same = current.length === headers.length &&
                current.every((h, i) => String(h) === String(headers[i]));
+
   if (!same) {
     await api.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
@@ -88,7 +104,7 @@ export async function readAll(tabName) {
   return { header: v[0], rows: v.slice(1) };
 }
 
-// === UTIL BISNIS ===
+// ---- Domain logic yang kamu pakai ----
 export async function isAllowed(telegramId) {
   const { header, rows } = await readAll(tabs.WHITELIST);
   if (!header.length) return false;
@@ -100,19 +116,10 @@ export async function isAllowed(telegramId) {
   return false;
 }
 
-function nowIso() {
-  return new Date().toISOString();
-}
-function addMinutesISO(iso, minutes) {
-  const d = new Date(iso);
-  d.setMinutes(d.getMinutes() + minutes);
-  return d.toISOString();
-}
+function nowIso() { return new Date().toISOString(); }
+function addMinutesISO(iso, minutes) { const d = new Date(iso); d.setMinutes(d.getMinutes()+minutes); return d.toISOString(); }
 function rnd4() { return String(Math.floor(1000 + Math.random()*9000)); }
-function makeToken() {
-  // token pendek mudah dicatat (bisa diubah sesuai selera)
-  return `${Date.now().toString(36)}-${rnd4()}`;
-}
+function makeToken() { return `${Date.now().toString(36)}-${rnd4()}`; }
 
 export async function issueToken({ requesterId, nama_teknisi, nama_odc, keperluan, ttlMinutes=3 }) {
   const token = makeToken();

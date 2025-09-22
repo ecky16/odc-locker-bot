@@ -1,0 +1,10 @@
+{
+"name": "odc-locker-bot",
+"version": "1.0.0",
+"type": "module",
+"private": true,
+"engines": { "node": ">=18" },
+"dependencies": {
+"googleapis": "^129.0.0"
+}
+}

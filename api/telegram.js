@@ -1,46 +1,81 @@
-// /api/telegram.js — process-first (balas ke Telegram setelah kirim DM)
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(200).send("OK"); // GET test
-  }
+import { setupSheets, appendRow, readAll, tabs } from "./_sheets.js";
+import { sendMessage } from "./_tg.js";
 
-  try {
-    const update = req.body || {};
-    console.log("INBOUND", JSON.stringify(update));
 
-    const msg = update.message || update.callback_query?.message;
-    if (!msg) {
-      return res.status(200).send("OK"); // no-op
-    }
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const TOKEN_TTL_MIN = Number(process.env.TOKEN_TTL_MIN || "3");
 
-    const chatId = msg.chat.id;
-    const text = (update.message?.text || "").trim();
-    const token = process.env.BOT_TOKEN;
 
-    if (!token) {
-      console.error("NO_BOT_TOKEN_ENV");
-      return res.status(500).send("NO_BOT_TOKEN");
-    }
+const nowIso = () => new Date().toISOString();
+const rnd4 = () => String(Math.floor(1000 + Math.random() * 9000));
 
-    const body = new URLSearchParams({
-      chat_id: String(chatId),
-      text: `echo: ${text || "(no text)"}`
-    });
 
-    console.log("OUTBOUND → sendMessage");
-    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      body
-    });
-    const j = await r.json().catch(() => ({}));
-    console.log("OUTBOUND RESULT", r.status, JSON.stringify(j));
-
-    // Baru kirim 200 ke Telegram
-    return res.status(200).send("OK");
-  } catch (e) {
-    console.error("TELEGRAM_HANDLER_ERR", e);
-    return res.status(200).send("OK"); // tetap 200 supaya Telegram tidak retry
-  }
+async function isAllowed(userId) {
+const { header, rows } = await readAll(tabs.TAB_WHITELIST);
+const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+for (const r of rows) {
+const v = String((r[idx.telegram_id] || "")).trim().replace(/\.0$/, "");
+if (v && v === String(userId)) return true;
+}
+return false;
 }
 
+
+async function getState(chatId) {
+const { header, rows } = await readAll(tabs.TAB_STATE);
+const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+for (let i = rows.length - 1; i >= 0; i--) {
+const r = rows[i];
+if (String(r[idx.chat_id]) === String(chatId)) {
+return {
+step: r[idx.step] || null,
+data: {
+requesterId: r[idx.requester_id] || "",
+nama_teknisi: r[idx.nama_teknisi] || "",
+nama_odc: r[idx.nama_odc] || "",
+keperluan: r[idx.keperluan] || ""
+}
+};
+}
+}
+return { step: null, data: {} };
+}
+
+
+async function setState(chatId, state) {
+await appendRow(tabs.TAB_STATE, [
+String(chatId), state.step || "", state.data?.requesterId || "",
+state.data?.nama_teknisi || "", state.data?.nama_odc || "", state.data?.keperluan || "",
+nowIso()
+]);
+}
+
+
+async function clearState(chatId) {
+// opsional: biarin state append-only, cukup tambah baris step=null (riwayat tetap ada)
+await setState(chatId, { step: null, data: {} });
+}
+
+
+async function expireOldTokens() {
+const { header, rows } = await readAll(tabs.TAB_TOKENS);
+const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+const updates = [];
+const api = (await import("googleapis")).google.sheets({ version: "v4", auth: (await import("./_sheets.js")).default });
+}
+
+
+export default async function handler(req, res) {
+if (req.method !== "POST") return res.status(200).send("OK");
+
+
+// Init sheet headers if needed
+await setupSheets();
+
+
+res.status(200).send("OK"); // balas dulu ke Telegram biar nggak retry
+
+
+try {
+const update = req.body || {};
 export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };

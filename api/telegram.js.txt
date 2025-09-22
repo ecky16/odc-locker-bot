@@ -1,0 +1,86 @@
+import { setupSheets, appendRow, readAll, tabs } from "./_sheets.js";
+import { sendMessage } from "./_tg.js";
+
+
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const TOKEN_TTL_MIN = Number(process.env.TOKEN_TTL_MIN || "3");
+
+
+const nowIso = () => new Date().toISOString();
+const rnd4 = () => String(Math.floor(1000 + Math.random() * 9000));
+
+
+async function isAllowed(userId) {
+const { header, rows } = await readAll(tabs.TAB_WHITELIST);
+const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+for (const r of rows) {
+const v = String((r[idx.telegram_id] || "")).trim().replace(/\.0$/, "");
+if (v && v === String(userId)) return true;
+}
+return false;
+}
+
+
+async function getState(chatId) {
+const { header, rows } = await readAll(tabs.TAB_STATE);
+const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+for (let i = rows.length - 1; i >= 0; i--) {
+const r = rows[i];
+if (String(r[idx.chat_id]) === String(chatId)) {
+return {
+step: r[idx.step] || null,
+data: {
+requesterId: r[idx.requester_id] || "",
+nama_teknisi: r[idx.nama_teknisi] || "",
+nama_odc: r[idx.nama_odc] || "",
+keperluan: r[idx.keperluan] || ""
+}
+};
+}
+}
+return { step: null, data: {} };
+}
+
+
+async function setState(chatId, state) {
+await appendRow(tabs.TAB_STATE, [
+String(chatId), state.step || "", state.data?.requesterId || "",
+state.data?.nama_teknisi || "", state.data?.nama_odc || "", state.data?.keperluan || "",
+nowIso()
+]);
+}
+
+
+async function clearState(chatId) {
+// opsional: biarin state append-only, cukup tambah baris step=null (riwayat tetap ada)
+await setState(chatId, { step: null, data: {} });
+}
+
+
+async function expireOldTokens() {
+const { header, rows } = await readAll(tabs.TAB_TOKENS);
+const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+const updates = [];
+const api = (await import("googleapis")).google.sheets({ version: "v4", auth: (await import("./_sheets.js")).default });
+}
+
+
+export default async function handler(req, res) {
+if (req.method !== "POST") return res.status(200).send("OK");
+
+
+// Init sheet headers if needed
+await setupSheets();
+
+
+res.status(200).send("OK"); // balas dulu ke Telegram biar nggak retry
+
+
+try {
+const update = req.body || {};
+const msg = update.message || update.callback_query?.message;
+if (!msg) return;
+const chatId = msg.chat.id;
+const userId = (update.message ? update.message.from.id : update.callback_query.from.id);
+const text = (update.message?.text || "").trim();
+export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };

@@ -1,0 +1,45 @@
+import { readAll, findAndUpdateToken, tabs } from "./_sheets.js";
+
+
+export default async function handler(req, res) {
+try {
+const token = String((req.query.token || req.body?.token || "")).trim();
+const odc = String((req.query.odc || req.body?.odc || "")).trim().toUpperCase();
+if (!token || !odc) return res.status(400).json({ ok: false, reason: "MISSING_PARAMS" });
+
+
+// cari token VALID (ISSUED & belum expired)
+const { header, rows } = await readAll(tabs.TAB_TOKENS);
+const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+const now = Date.now();
+let hit = null;
+for (let r = 0; r < rows.length; r++) {
+const row = rows[r];
+const t = String(row[idx.token] || "");
+const o = String(row[idx.nama_odc] || "").toUpperCase();
+const status = row[idx.status];
+const expTs = Date.parse(row[idx.expires_at] || "");
+if (t === token && o === odc) {
+if (status !== "ISSUED") { hit = { reason: status === "USED" ? "USED" : "INVALID" }; break; }
+if (!(expTs && now <= expTs)) { hit = { reason: "EXPIRED" }; break; }
+hit = { ok: true, rowIndex: r + 2 }; // baris 1-based
+break;
+}
+}
+
+
+if (!hit || !hit.ok) {
+return res.status(200).json({ ok: false, reason: hit?.reason || "INVALID" });
+}
+
+
+// mark USED
+const usedAt = new Date().toISOString();
+await findAndUpdateToken({ token, odc, toStatus: "USED", usedAt });
+
+
+return res.status(200).json({ ok: true, pulse_ms: 1200 });
+} catch (e) {
+return res.status(200).json({ ok: false, reason: String(e) });
+}
+}

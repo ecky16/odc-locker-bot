@@ -19,6 +19,7 @@
 // JANGAN lupa: share file spreadsheet ke email Service Account (Editor).
 // -----------------------------------------------------------------------------
 
+// api/_sheets.js
 import { google } from "googleapis";
 
 export const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
@@ -32,35 +33,59 @@ export const tabs = {
 const SCOPES_RW = ["https://www.googleapis.com/auth/spreadsheets"];
 const SCOPES_RO = ["https://www.googleapis.com/auth/spreadsheets.readonly"];
 
-// Singleton client
-let _sheetsClientRW = null;
-let _sheetsClientRO = null;
-
+/* ================== BUILDER (TARUH DI SINI) ================== */
+// Pilih salah satu skema ENV (A atau B). Kodenya support dua-duanya.
 function buildAuth(scopes) {
-  // Skema A: JSON penuh di satu ENV
+  // Opsi A: satu ENV berisi JSON penuh
   if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
     const creds = JSON.parse(raw);
-    if (creds.private_key?.includes("\\n")) {
-      creds.private_key = creds.private_key.replace(/\\n/g, "\n");
-    }
+
+    // normalisasi private_key biar OpenSSL gak error
+    let pk = creds.private_key || "";
+    pk = pk.trim().replace(/\r\n/g, "\n").replace(/\\n/g, "\n");
+    if (pk.startsWith('"') && pk.endsWith('"')) pk = pk.slice(1, -1);
+    creds.private_key = pk;
+
     return new google.auth.GoogleAuth({ credentials: creds, scopes });
   }
 
-  // Skema B: email + key dipisah
-  const client_email = process.env.GOOGLE_CLIENT_EMAIL;
-  let private_key = process.env.GOOGLE_PRIVATE_KEY;
-  if (!client_email || !private_key) {
-    throw new Error(
-      "Missing GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_CLIENT_EMAIL/GOOGLE_PRIVATE_KEY"
-    );
+  // Opsi B: dua ENV terpisah (email + key)
+  const email = process.env.GOOGLE_CLIENT_EMAIL;
+  let pk = process.env.GOOGLE_PRIVATE_KEY || "";
+  if (!email || !pk) {
+    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_CLIENT_EMAIL/GOOGLE_PRIVATE_KEY");
   }
-  if (private_key.includes("\\n")) private_key = private_key.replace(/\\n/g, "\n");
+  pk = pk.trim().replace(/\r\n/g, "\n").replace(/\\n/g, "\n");
+  if (pk.startsWith('"') && pk.endsWith('"')) pk = pk.slice(1, -1);
+
   return new google.auth.GoogleAuth({
-    credentials: { client_email, private_key },
+    credentials: { client_email: email, private_key: pk },
     scopes,
   });
 }
+/* ================== /BUILDER ================== */
+
+// Singleton clients
+let _sheetsClientRW = null;
+let _sheetsClientRO = null;
+
+function sheetsRW() {
+  if (_sheetsClientRW) return _sheetsClientRW;
+  const auth = buildAuth(SCOPES_RW);
+  _sheetsClientRW = google.sheets({ version: "v4", auth });
+  return _sheetsClientRW;
+}
+
+function sheetsRO() {
+  if (_sheetsClientRO) return _sheetsClientRO;
+  const auth = buildAuth(SCOPES_RO);
+  _sheetsClientRO = google.sheets({ version: "v4", auth });
+  return _sheetsClientRO;
+}
+
+/* …lanjutkan fungsi-fungsi kamu: ensureHeaders, setupSheets, readAll, appendRow,
+   isAllowed, issueToken, consumeToken… (tidak berubah) */
 
 function sheetsRW() {
   if (_sheetsClientRW) return _sheetsClientRW;

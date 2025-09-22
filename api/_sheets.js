@@ -1,36 +1,43 @@
 // api/_sheets.js
 import { google } from "googleapis";
-
 export const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const SCOPE = ["https://www.googleapis.com/auth/spreadsheets"];
 
-export const tabs = {
-  WHITELIST: "whitelist",
-  TOKENS: "tokens",
-  LOGS: "logs",
-};
+let _client;
+function googleClient() {
+  if (_client) return _client;
 
-// ---- Sheets client (singleton) dengan Service Account dari ENV ----
-let _sheetsClient = null;
-function sheets() {
-  if (_sheetsClient) return _sheetsClient;
+  // PILIH SALAH SATU SKEMA ENV
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    const creds = JSON.parse(raw);
+    if (creds.private_key?.includes("\\n")) {
+      creds.private_key = creds.private_key.replace(/\\n/g, "\n");
+    }
+    const auth = new google.auth.GoogleAuth({
+      credentials: creds,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+    _client = google.sheets({ version: "v4", auth });
+    return _client;
+  }
 
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON");
-
-  // Hati-hati: ENV harus JSON valid
-  const creds = JSON.parse(raw);
-
+  // Atau skema email+key
+  const client_email = process.env.GOOGLE_CLIENT_EMAIL;
+  let private_key = process.env.GOOGLE_PRIVATE_KEY;
+  if (!client_email || !private_key) {
+    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_CLIENT_EMAIL/GOOGLE_PRIVATE_KEY");
+  }
+  if (private_key.includes("\\n")) private_key = private_key.replace(/\\n/g, "\n");
   const auth = new google.auth.GoogleAuth({
-    credentials: creds,
-    scopes: SCOPE,
+    credentials: { client_email, private_key },
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
-
-  _sheetsClient = google.sheets({ version: "v4", auth });
-  return _sheetsClient;
+  _client = google.sheets({ version: "v4", auth });
+  return _client;
 }
 
-// ---- Helpers ----
+function sheets() { return googleClient(); }
+
 async function listSheetTitles() {
   const api = sheets();
   const meta = await api.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
@@ -51,16 +58,12 @@ async function ensureSheetExists(title) {
 export async function ensureHeaders(tabName, headers) {
   const api = sheets();
   await ensureSheetExists(tabName);
-
   const resp = await api.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: `${tabName}!A1:Z1`,
   });
-
-  const current = (resp.data.values && resp.data.values[0]) || [];
-  const same = current.length === headers.length &&
-               current.every((h, i) => String(h) === String(headers[i]));
-
+  const cur = (resp.data.values && resp.data.values[0]) || [];
+  const same = cur.length === headers.length && cur.every((h,i)=> String(h)===String(headers[i]));
   if (!same) {
     await api.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
@@ -72,29 +75,16 @@ export async function ensureHeaders(tabName, headers) {
 }
 
 export async function setupSheets() {
-  await ensureHeaders(tabs.WHITELIST, ["telegram_id","nama","role"]);
-  await ensureHeaders(tabs.TOKENS, [
+  await ensureHeaders("whitelist", ["telegram_id","nama","role"]);
+  await ensureHeaders("tokens", [
     "token","nama_teknisi","nama_odc","keperluan",
     "requester_id","status","issued_at","expires_at","used_at"
   ]);
-  await ensureHeaders(tabs.LOGS, ["time","actor","action","detail"]);
-}
-
-export async function appendRow(tabName, row) {
-  const api = sheets();
-  await ensureSheetExists(tabName);
-  await api.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${tabName}!A1`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [row] },
-  });
+  await ensureHeaders("logs", ["time","actor","action","detail"]);
 }
 
 export async function readAll(tabName) {
   const api = sheets();
-  await ensureSheetExists(tabName);
   const resp = await api.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: `${tabName}!A1:Z`,
@@ -104,9 +94,19 @@ export async function readAll(tabName) {
   return { header: v[0], rows: v.slice(1) };
 }
 
-// ---- Domain logic yang kamu pakai ----
+export async function appendRow(tabName, row) {
+  const api = sheets();
+  await api.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${tabName}!A1`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [row] },
+  });
+}
+
 export async function isAllowed(telegramId) {
-  const { header, rows } = await readAll(tabs.WHITELIST);
+  const { header, rows } = await readAll("whitelist");
   if (!header.length) return false;
   const idx = Object.fromEntries(header.map((h,i)=>[h,i]));
   for (const r of rows) {
@@ -117,7 +117,7 @@ export async function isAllowed(telegramId) {
 }
 
 function nowIso() { return new Date().toISOString(); }
-function addMinutesISO(iso, minutes) { const d = new Date(iso); d.setMinutes(d.getMinutes()+minutes); return d.toISOString(); }
+function addMinutesISO(iso, minutes) { const d=new Date(iso); d.setMinutes(d.getMinutes()+minutes); return d.toISOString(); }
 function rnd4() { return String(Math.floor(1000 + Math.random()*9000)); }
 function makeToken() { return `${Date.now().toString(36)}-${rnd4()}`; }
 
@@ -125,55 +125,44 @@ export async function issueToken({ requesterId, nama_teknisi, nama_odc, keperlua
   const token = makeToken();
   const issued_at = nowIso();
   const expires_at = addMinutesISO(issued_at, ttlMinutes);
-  await appendRow(tabs.TOKENS, [
-    token, nama_teknisi, nama_odc, keperluan,
-    requesterId, "PENDING", issued_at, expires_at, ""
-  ]);
-  await appendRow(tabs.LOGS, [nowIso(), requesterId, "ISSUE_TOKEN", `${token}|${nama_odc}|${keperluan}`]);
+  await appendRow("tokens", [token, nama_teknisi, nama_odc, keperluan, requesterId, "PENDING", issued_at, expires_at, ""]);
+  await appendRow("logs", [nowIso(), requesterId, "ISSUE_TOKEN", `${token}|${nama_odc}|${keperluan}`]);
   return { token, issued_at, expires_at };
 }
 
 export async function consumeToken({ token, odc, usedAtIso }) {
-  const api = sheets();
-  const { header, rows } = await readAll(tabs.TOKENS);
+  const { header, rows } = await readAll("tokens");
   if (!header.length) return { ok:false, reason:"NO_HEADER" };
-
   const idx = Object.fromEntries(header.map((h,i)=>[h,i]));
   let rowIndex = -1;
   const now = new Date(usedAtIso || nowIso());
 
-  for (let r = 0; r < rows.length; r++) {
+  for (let r=0; r<rows.length; r++) {
     const row = rows[r];
     const tk = String(row[idx.token] || "");
     const rowOdc = String(row[idx.nama_odc] || "");
     const status = String(row[idx.status] || "");
     const exp = new Date(String(row[idx.expires_at] || ""));
-
     if (tk === token && rowOdc.toUpperCase() === String(odc).toUpperCase()) {
       if (status !== "PENDING") return { ok:false, reason:"ALREADY_USED_OR_INVALID" };
       if (!(exp instanceof Date) || isNaN(exp)) return { ok:false, reason:"BAD_EXP" };
       if (now > exp) return { ok:false, reason:"EXPIRED" };
-      rowIndex = r + 2; // + header
-      break;
+      rowIndex = r + 2; break;
     }
   }
-
   if (rowIndex === -1) return { ok:false, reason:"NOT_FOUND" };
 
-  const statusRange = `${tabs.TOKENS}!F${rowIndex}`; // status
-  const usedAtRange = `${tabs.TOKENS}!I${rowIndex}`; // used_at
-
+  const api = sheets();
   await api.spreadsheets.values.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
       valueInputOption: "RAW",
       data: [
-        { range: statusRange, values: [["USED"]] },
-        { range: usedAtRange, values: [[usedAtIso || nowIso()]] },
+        { range: `tokens!F${rowIndex}`, values: [["USED"]] },  // status
+        { range: `tokens!I${rowIndex}`, values: [[usedAtIso || nowIso()]] }, // used_at
       ],
     },
   });
-
-  await appendRow(tabs.LOGS, [nowIso(), "ESP", "CONSUME_TOKEN", `${token}|${odc}`]);
+  await appendRow("logs", [nowIso(), "ESP", "CONSUME_TOKEN", `${token}|${odc}`]);
   return { ok:true };
 }

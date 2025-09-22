@@ -1,3 +1,5 @@
+export const config = { runtime: "nodejs18.x" }; // WAJIB, bukan Edge
+
 // /api/telegram.js — Vercel + Google Sheets (process-first)
 import { setupSheets, appendRow, readAll, tabs } from "./_sheets.js";
 import { sendMessage } from "./_tg.js";
@@ -179,3 +181,4 @@ export default async function handler(req, res) {
 }
 
 export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };
+

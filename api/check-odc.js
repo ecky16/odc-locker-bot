@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const SPREADSHEET_ID = process.env.SPRE ADSHEET_ID;
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const GS_CREDS_JSON = process.env.GS_CREDS_JSON;
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
@@ -53,7 +53,6 @@ export default async function handler(req, res) {
 
     const now = new Date();
 
-    // fungsi cari area & leader berdasarkan chatId teknisi
     function getAreaAndLeaders(telegramId) {
       const idStr = String(telegramId);
 
@@ -74,7 +73,6 @@ export default async function handler(req, res) {
       return { area, leaders };
     }
 
-    // iterasi log
     for (let i = 1; i < logRows.length; i++) {
       const r = logRows[i];
 
@@ -95,7 +93,7 @@ export default async function handler(req, res) {
       const rowNum = i + 1;
 
       // 30 menit -> warning ke teknisi
-      if (diffMinutes >= 1 && !warningSent) {
+      if (diffMinutes >= 30 && !warningSent) {
         await sendMessage(
           chatId,
           `⚠️ *Peringatan Waktu Buka ODC*\n\n` +
@@ -114,13 +112,13 @@ export default async function handler(req, res) {
         });
       }
 
-      // 40 menit -> laporan ke LEADER area yang sama
+      // 40 menit -> alert ke LEADER area yang sama
       if (diffMinutes >= 40 && !adminNotified) {
         const { area, leaders } = getAreaAndLeaders(chatId);
 
         if (area && leaders.length > 0) {
           for (const leader of leaders) {
-            const leaderChatId = leader[0]; // TELEGRAM_ID leader
+            const leaderChatId = leader[0];
             const leaderName = leader[1] || "-";
 
             await sendMessage(

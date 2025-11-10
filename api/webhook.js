@@ -1,106 +1,220 @@
-// api/webhook.js
-import { setupSheets, isAllowed, issueToken, consumeToken } from "./_sheets.js";
-import { sendMessage, parseMintaKunci } from "./_tg.js";
+import express from "express";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
+import { google } from "googleapis";
 
-export default async function handler(req, res) {
+const app = express();
+app.use(bodyParser.json());
+
+// === ENV VARIABLES ===
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const GS_CREDS_JSON = JSON.parse(process.env.GS_CREDS_JSON);
+const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const DURASI_JAM = {
+  "VALIDASI ODC": 5,
+  "GAMAS": 3,
+  "PT-2/PT-3": 1,
+  "PERAPIHAN ODC": 2,
+};
+
+// === GOOGLE SHEETS CLIENT ===
+async function sheetsClient() {
+  const auth = new google.auth.GoogleAuth({
+    credentials: GS_CREDS_JSON,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+  const client = await auth.getClient();
+  return google.sheets({ version: "v4", auth: client });
+}
+
+// === HELPER ===
+function randomPin() {
+  return Math.floor(1000 + Math.random() * 9000).toString();
+}
+
+async function sendMessage(chat_id, text, extra = {}) {
+  await fetch(`${TELEGRAM_API}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id, text, ...extra }),
+  });
+}
+
+// === MAIN HANDLER ===
+app.post("/", async (req, res) => {
+  const update = req.body;
+
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const pathname = url.pathname || "";
-
-    if (req.method === "GET" && pathname.endsWith("/verify")) {
-      // Endpoint untuk ESP: /api/verify?token=...&odc=...
-      const token = url.searchParams.get("token") || "";
-      const odc = url.searchParams.get("odc") || "";
-      if (!token || !odc) {
-        return res.status(400).json({ ok:false, reason:"MISSING_PARAMS" });
-      }
-      const out = await consumeToken({ token, odc });
-      return res.status(200).json(out);
+    // --- handle /minta_pin ---
+    if (update.message && update.message.text === "/minta_pin") {
+      const chatId = update.message.chat.id;
+      await sendMessage(chatId, "Masukkan nama ODC (format ODC-STO-XX):", {
+        reply_markup: { force_reply: true },
+      });
+      return res.sendStatus(200);
     }
 
-    // Telegram webhook (POST)
-    if (req.method !== "POST") return res.status(405).end();
+    // --- handle reply nama ODC ---
+    if (update.message && update.message.reply_to_message) {
+      const chatId = update.message.chat.id;
+      const user = update.message.from;
+      const odcName = update.message.text.trim().toUpperCase();
 
-    const body = await readJson(req);
-    await setupSheets(); // sekali panggil aman; fungsi idempotent
+      const sheets = await sheetsClient();
+      const odcData = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "odc_master!A:B",
+      });
+      const rows = odcData.data.values || [];
+      const row = rows.find((r) => r[0]?.toUpperCase() === odcName);
 
-    const msg = body?.message;
-    const chatId = msg?.chat?.id;
-    const text = msg?.text?.trim() || "";
-    const userId = msg?.from?.id;
-
-    if (!chatId || !text) return res.status(200).json({ ok:true });
-
-    // Hanya whitelist yang boleh minta kunci
-    if (text.startsWith("/minta_kunci")) {
-      const allowed = await isAllowed(userId);
-      if (!allowed) {
-        await sendMessage(chatId, "Maaf, kamu belum terdaftar di whitelist.");
-        return res.status(200).json({ ok:true });
+      if (!row) {
+        await sendMessage(chatId, `❌ ODC ${odcName} tidak ditemukan di database.`);
+        return res.sendStatus(200);
       }
 
-      const parsed = parseMintaKunci(text);
-      if (!parsed) {
-        await sendMessage(chatId, "Format salah.\nContoh: <code>/minta_kunci Budi;ODC-17;Maintenance</code>");
-        return res.status(200).json({ ok:true });
-      }
+      const pinSekarang = row[1];
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: "VALIDASI ODC", callback_data: `REQ|VALIDASI ODC|${odcName}` }],
+          [{ text: "GAMAS", callback_data: `REQ|GAMAS|${odcName}` }],
+          [{ text: "PT-2/PT-3", callback_data: `REQ|PT-2/PT-3|${odcName}` }],
+          [{ text: "PERAPIHAN ODC", callback_data: `REQ|PERAPIHAN ODC|${odcName}` }],
+        ],
+      };
 
-      const { nama_teknisi, nama_odc, keperluan } = parsed;
-      const { token, expires_at } = await issueToken({
-        requesterId: userId,
-        nama_teknisi,
-        nama_odc,
-        keperluan,
-        ttlMinutes: 3, // TTL 3 menit
+      await sendMessage(
+        chatId,
+        `🔓 *PIN saat ini untuk ${odcName} adalah ${pinSekarang}*\nPilih keperluan kamu di bawah ini:`,
+        { parse_mode: "Markdown", reply_markup: keyboard }
+      );
+      return res.sendStatus(200);
+    }
+
+    // --- handle callback pilihan keperluan ---
+    if (update.callback_query) {
+      const cb = update.callback_query;
+      const [prefix, keperluan, odcName] = cb.data.split("|");
+      const chatId = cb.from.id;
+      const nama = cb.from.first_name || "-";
+      const now = new Date();
+      const durasiJam = DURASI_JAM[keperluan] || 2;
+      const expireTime = new Date(now.getTime() + durasiJam * 3600 * 1000);
+
+      const sheets = await sheetsClient();
+      // Ambil PIN SEKARANG dari master
+      const odcData = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "odc_master!A:B",
+      });
+      const rows = odcData.data.values || [];
+      const row = rows.find((r) => r[0]?.toUpperCase() === odcName);
+      const pinSekarang = row ? row[1] : "????";
+
+      // catat log
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "log_request_pin!A:H",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [
+            [
+              now.toLocaleString("sv-SE"), // TANGGAL
+              chatId,
+              nama,
+              odcName,
+              keperluan,
+              pinSekarang,
+              expireTime.toLocaleString("sv-SE"),
+              "PENDING",
+            ],
+          ],
+        },
       });
 
       await sendMessage(
         chatId,
-        [
-          "<b>KUNCI DITERBITKAN</b>",
-          `Token: <code>${token}</code>`,
-          `Teknisi: ${nama_teknisi}`,
-          `ODC: ${nama_odc}`,
-          `Keperluan: ${keperluan}`,
-          `Berlaku s/d: <code>${expires_at}</code> (±3 menit)`,
-          "",
-          "Berikan token ini ke perangkat (ESP) untuk verifikasi.",
-        ].join("\n")
+        `✅ Permintaan dicatat.\nODC: *${odcName}*\nKeperluan: *${keperluan}*\nPIN: *${pinSekarang}*\nBerlaku hingga: ${expireTime.toLocaleString("id-ID")}\n\nKetik /selesai jika sudah selesai.`,
+        { parse_mode: "Markdown" }
       );
-      return res.status(200).json({ ok:true });
+
+      // jawab callback biar tombol hilang loading
+      await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callback_query_id: cb.id }),
+      });
+      return res.sendStatus(200);
     }
 
-    // Bantuan
-    if (text === "/start" || text === "/help") {
+    // --- handle /selesai ---
+    if (update.message && update.message.text === "/selesai") {
+      const chatId = update.message.chat.id;
+      const user = update.message.from;
+      const sheets = await sheetsClient();
+
+      // ambil log terakhir user yang PENDING
+      const log = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "log_request_pin!A:H",
+      });
+      const rows = log.data.values || [];
+      const last = [...rows]
+        .reverse()
+        .find((r) => String(r[1]) === String(chatId) && r[7] === "PENDING");
+
+      if (!last) {
+        await sendMessage(chatId, "❌ Tidak ada permintaan aktif untuk kamu.");
+        return res.sendStatus(200);
+      }
+
+      const odcName = last[3];
+      const newPin = randomPin();
+      const now = new Date().toLocaleString("sv-SE");
+
+      // update odc_master dengan pin baru
+      const odcSheet = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "odc_master!A:C",
+      });
+      const odcRows = odcSheet.data.values || [];
+      const rowIndex = odcRows.findIndex((r) => r[0]?.toUpperCase() === odcName);
+
+      if (rowIndex >= 0) {
+        const rowNumber = rowIndex + 1;
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SPREADSHEET_ID,
+          range: `odc_master!B${rowNumber}:C${rowNumber}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[newPin, now]] },
+        });
+      }
+
+      // update log status
+      const logIndex = rows.length - rows.indexOf(last);
+      const rowNumber = rows.length - logIndex + 1;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `log_request_pin!H${rowNumber}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [["DONE"]] },
+      });
+
       await sendMessage(
         chatId,
-        [
-          "Halo. Perintah tersedia:",
-          "• <code>/minta_kunci NAMA_TEKNISI;NAMA_ODC;KEPERLUAN</code>",
-          "",
-          "Contoh:",
-          "<code>/minta_kunci Surya;ODC-PSN-12;Penggantian jumper</code>",
-          "",
-          "Catatan:",
-          "- Hanya user yang di-whitelist yang bisa minta kunci.",
-          "- Token berlaku 3 menit sejak diterbitkan.",
-        ].join("\n")
+        `🔒 Terima kasih.\nPIN baru untuk *${odcName}* adalah *${newPin}*\nMohon segera ganti PIN gembok.`,
+        { parse_mode: "Markdown" }
       );
-      return res.status(200).json({ ok:true });
+
+      return res.sendStatus(200);
     }
 
-    // default: abaikan
-    return res.status(200).json({ ok:true });
-  } catch (e) {
-    console.error("webhook error:", e);
-    try { return res.status(200).json({ ok:true }); }
-    catch { return; }
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Error:", err);
+    res.sendStatus(500);
   }
-}
+});
 
-async function readJson(req) {
-  const chunks = [];
-  for await (const c of req) chunks.push(c);
-  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { return {}; }
-}
+export default app;

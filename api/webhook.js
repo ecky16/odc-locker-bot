@@ -46,50 +46,52 @@ async function handleUpdate(update) {
   }
 
   // 2) Reply nama ODC
-  if (
-    update.message &&
-    update.message.reply_to_message &&
-    update.message.reply_to_message.text &&
-    update.message.reply_to_message.text.includes("Masukkan nama ODC")
-  ) {
-    const chatId = update.message.chat.id;
-    const odcName = update.message.text.trim().toUpperCase();
+// 2) Reply nama ODC
+if (
+  update.message &&
+  update.message.reply_to_message &&
+  update.message.reply_to_message.text &&
+  update.message.reply_to_message.text.includes("Masukkan nama ODC")
+) {
+  const chatId = update.message.chat.id;
+  const odcName = update.message.text.trim().toUpperCase();
 
-    const sheets = await getSheetsClient();
-    const odcRes = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "odc_master!A:B",
-    });
-    const rows = odcRes.data.values || [];
+  const sheets = await getSheetsClient();
+  const odcRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: "odc_master!A:B",
+  });
+  const rows = odcRes.data.values || [];
 
-    const row = rows.find((r) => (r[0] || "").toUpperCase() === odcName);
+  const row = rows.find((r) => (r[0] || "").toUpperCase() === odcName);
 
-    if (!row) {
-      await sendMessage(
-        chatId,
-        `❌ ODC ${odcName} tidak ditemukan di database (sheet odc_master).`
-      );
-      return;
-    }
-
-    const pinSekarang = row[1];
-
-    const keyboard = {
-      inline_keyboard: [
-        [{ text: "VALIDASI ODC", callback_data: `REQ|VALIDASI ODC|${odcName}` }],
-        [{ text: "GAMAS", callback_data: `REQ|GAMAS|${odcName}` }],
-        [{ text: "PT-2/PT-3", callback_data: `REQ|PT-2/PT-3|${odcName}` }],
-        [{ text: "PERAPIHAN ODC", callback_data: `REQ|PERAPIHAN ODC|${odcName}` }],
-      ],
-    };
-
+  if (!row) {
     await sendMessage(
       chatId,
-      `🔓 *PIN saat ini untuk ${odcName} adalah ${pinSekarang}*\n\nPilih keperluan di bawah ini:`,
-      { parse_mode: "Markdown", reply_markup: keyboard }
+      `❌ ODC ${odcName} tidak ditemukan di database (sheet odc_master).`
     );
     return;
   }
+
+  const pinSekarang = row[1];
+
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: "VALIDASI ODC", callback_data: `REQ|VALIDASI ODC|${odcName}` }],
+      [{ text: "GAMAS", callback_data: `REQ|GAMAS|${odcName}` }],
+      [{ text: "PT-2/PT-3", callback_data: `REQ|PT-2/PT-3|${odcName}` }],
+      [{ text: "PERAPIHAN ODC", callback_data: `REQ|PERAPIHAN ODC|${odcName}` }],
+    ],
+  };
+
+  await sendMessage(
+    chatId,
+    `🔓 *PIN saat ini untuk ${odcName} adalah ${pinSekarang}*\n\nPilih keperluan di bawah ini:`,
+    { parse_mode: "Markdown", reply_markup: keyboard }
+  );
+  return;
+}
+
 
   // 3) Callback pilihan keperluan
   if (update.callback_query) {

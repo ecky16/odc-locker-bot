@@ -4,14 +4,17 @@ import bodyParser from "body-parser";
 const app = express();
 app.use(bodyParser.json());
 
-// tes endpoint
+// tes GET
 app.get("/", (req, res) => {
   res.status(200).send("Webhook aktif ✅");
 });
 
-app.post("/", async (req, res) => {
-  console.log("update:", JSON.stringify(req.body));
-  res.status(200).send("ok"); // wajib balas ke Telegram
+// tangani POST dari Telegram
+app.post("/", (req, res) => {
+  console.log("Update dari Telegram:", JSON.stringify(req.body, null, 2));
+
+  // penting! Telegram butuh respon 200 OK secepatnya
+  res.status(200).send("ok");
 });
 
 export default app;

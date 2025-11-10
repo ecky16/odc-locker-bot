@@ -1,12 +1,11 @@
 import { google } from "googleapis";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const SPREADSHEET_ID = process.env.SPRE ADSHEET_ID;
 const GS_CREDS_JSON = process.env.GS_CREDS_JSON;
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// Durasi per keperluan (jam)
 const DURASI_JAM = {
   "VALIDASI ODC": 5,
   "GAMAS": 3,
@@ -14,7 +13,7 @@ const DURASI_JAM = {
   "PERAPIHAN ODC": 2,
 };
 
-// ================= GOOGLE SHEETS CLIENT =================
+// ---------- helper Google Sheets ----------
 async function getSheetsClient() {
   const creds = JSON.parse(GS_CREDS_JSON);
   const auth = new google.auth.GoogleAuth({
@@ -25,7 +24,7 @@ async function getSheetsClient() {
   return google.sheets({ version: "v4", auth: client });
 }
 
-// ================= HELPER TELEGRAM =================
+// ---------- helper Telegram ----------
 async function sendMessage(chatId, text, extra = {}) {
   await fetch(TELEGRAM_API + "/sendMessage", {
     method: "POST",
@@ -34,19 +33,14 @@ async function sendMessage(chatId, text, extra = {}) {
   });
 }
 
-// Format WIB rapi
-function nowWIB() {
-  return new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
-}
-function addHoursWIB(hours) {
-  const now = new Date();
-  const t = new Date(now.getTime() + hours * 3600 * 1000);
-  return t.toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+// WIB helper
+function formatWIB(dateObj) {
+  return dateObj.toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
 }
 
-// ================= LOGIC UTAMA =================
+// ---------- LOGIC UTAMA ----------
 async function handleUpdate(update) {
-  // ========== /minta_pin ==========
+  // /minta_pin
   if (update.message && update.message.text === "/minta_pin") {
     const chatId = update.message.chat.id;
     await sendMessage(chatId, "Masukkan nama ODC (format ODC-STO-XX):", {
@@ -55,7 +49,7 @@ async function handleUpdate(update) {
     return;
   }
 
-  // ========== REPLY NAMA ODC ==========
+  // Reply nama ODC
   if (
     update.message &&
     update.message.reply_to_message &&
@@ -68,7 +62,7 @@ async function handleUpdate(update) {
     const sheets = await getSheetsClient();
     const odcRes = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: "odc_master!A:A", // cuma cek nama ODC
+      range: "odc_master!A:A",
     });
 
     const rows = odcRes.data.values || [];
@@ -82,7 +76,7 @@ async function handleUpdate(update) {
       return;
     }
 
-    // TIDAK TAMPILKAN PIN DI SINI
+    // belum tampilkan PIN di sini
     const keyboard = {
       inline_keyboard: [
         [{ text: "VALIDASI ODC", callback_data: `REQ|VALIDASI ODC|${odcName}` }],
@@ -100,23 +94,20 @@ async function handleUpdate(update) {
     return;
   }
 
-  // ========== CALLBACK PILIHAN KEPERLUAN ==========
+  // Callback pilihan keperluan
   if (update.callback_query) {
     const cb = update.callback_query;
     const data = cb.data || "";
     if (!data.startsWith("REQ|")) return;
 
-    const parts = data.split("|");
-    const keperluan = parts[1];
-    const odcName = parts[2];
+    const [_, keperluan, odcName] = data.split("|");
     const chatId = cb.from.id;
     const nama = cb.from.first_name || "-";
-
     const durasiJam = DURASI_JAM[keperluan] || 2;
 
     const sheets = await getSheetsClient();
 
-    // Ambil PIN SEKARANG dari master (BARU di sini)
+    // Ambil PIN SEKARANG dari odc_master (baru di sini)
     const odcRes = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: "odc_master!A:B",
@@ -125,31 +116,41 @@ async function handleUpdate(update) {
     const row = rows.find((r) => (r[0] || "").toUpperCase() === odcName);
     const pinSekarang = row ? row[1] : "????";
 
-    const waktuSekarangWIB = nowWIB();
-    const expireWIB = addHoursWIB(durasiJam);
+    const now = new Date();
+    const expire = new Date(now.getTime() + durasiJam * 3600 * 1000);
 
-    // catat log
+    const waktuNowWIB = formatWIB(now);
+    const expireWIB = formatWIB(expire);
+
+    const nowIso = now.toISOString();
+    const expireIso = expire.toISOString();
+
+    // catat log ke log_request_pin
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: "log_request_pin!A:H",
+      range: "log_request_pin!A:L",
       valueInputOption: "RAW",
       requestBody: {
         values: [
           [
-            waktuSekarangWIB, // TANGGAL (WIB)
-            chatId,
-            nama,
-            odcName,
-            keperluan,
-            pinSekarang,
-            expireWIB, // WAKTU EXPIRE (WIB)
-            "PENDING",
+            waktuNowWIB, // A
+            chatId, // B
+            nama, // C
+            odcName, // D
+            keperluan, // E
+            pinSekarang, // F
+            expireWIB, // G
+            "PENDING", // H
+            nowIso, // I
+            expireIso, // J
+            "", // K WARNING_SENT
+            "", // L ADMIN_NOTIFIED
           ],
         ],
       },
     });
 
-    // KIRIM PIN + INFO BARU DI SINI
+    // kirim PIN + info ke user
     await sendMessage(
       chatId,
       `✅ Permintaan dicatat.\n` +
@@ -157,41 +158,42 @@ async function handleUpdate(update) {
         `Keperluan: *${keperluan}*\n\n` +
         `🔓 PIN untuk ODC ini: *${pinSekarang}*\n` +
         `Berlaku sampai: *${expireWIB} WIB*\n\n` +
+        `Batas rekomendasi buka: *30 menit*.\n` +
         `Ketik /selesai jika pekerjaan sudah selesai.`,
       { parse_mode: "Markdown" }
     );
 
-    // jawab callback
+    // jawaban callback
     await fetch(TELEGRAM_API + "/answerCallbackQuery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callback_query_id: cb.id }),
     });
-
     return;
   }
 
-  // ========== /selesai ==========
+  // /selesai
   if (update.message && update.message.text === "/selesai") {
     const chatId = update.message.chat.id;
     const sheets = await getSheetsClient();
 
     const logRes = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: "log_request_pin!A:H",
+      range: "log_request_pin!A:L",
     });
+
     const rows = logRes.data.values || [];
     if (rows.length <= 1) {
       await sendMessage(chatId, "❌ Tidak ada permintaan aktif yang tercatat.");
       return;
     }
 
-    // cari log terakhir PENDING untuk user ini
+    // cari baris terakhir PENDING milik user ini
     let foundIndex = -1;
     for (let i = rows.length - 1; i >= 1; i--) {
-      const row = rows[i];
-      const rowChatId = row[1];
-      const status = row[7];
+      const r = rows[i];
+      const rowChatId = r[1];
+      const status = r[7];
       if (String(rowChatId) === String(chatId) && status === "PENDING") {
         foundIndex = i;
         break;
@@ -206,17 +208,16 @@ async function handleUpdate(update) {
     const logRow = rows[foundIndex];
     const odcName = logRow[3];
 
-    // generate PIN baru 4 digit
+    // generate PIN baru
     const newPin = Math.floor(1000 + Math.random() * 9000).toString();
-    const waktuGantiWIB = nowWIB();
+    const waktuGantiWIB = formatWIB(new Date());
 
-    // update odc_master: PIN SEKARANG + TERAKHIR DIGANTI (WIB)
+    // update odc_master
     const odcRes = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: "odc_master!A:C",
     });
     const odcRows = odcRes.data.values || [];
-
     let odcRowIndex = -1;
     for (let i = 0; i < odcRows.length; i++) {
       if ((odcRows[i][0] || "").toUpperCase() === odcName.toUpperCase()) {
@@ -226,29 +227,24 @@ async function handleUpdate(update) {
     }
 
     if (odcRowIndex >= 0) {
-      const rowNumber = odcRowIndex + 1; // 1-based
+      const rowNum = odcRowIndex + 1;
       await sheets.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID,
-        range: `odc_master!B${rowNumber}:C${rowNumber}`,
+        range: `odc_master!B${rowNum}:C${rowNum}`,
         valueInputOption: "RAW",
-        requestBody: {
-          values: [[newPin, waktuGantiWIB]],
-        },
+        requestBody: { values: [[newPin, waktuGantiWIB]] },
       });
     }
 
     // update status log jadi DONE
-    const logRowNumber = foundIndex + 1;
+    const logRowNum = foundIndex + 1;
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: `log_request_pin!H${logRowNumber}`,
+      range: `log_request_pin!H${logRowNum}`,
       valueInputOption: "RAW",
-      requestBody: {
-        values: [["DONE"]],
-      },
+      requestBody: { values: [["DONE"]] },
     });
 
-    // kirim ke user
     await sendMessage(
       chatId,
       `🔒 Terima kasih.\n` +
@@ -259,7 +255,7 @@ async function handleUpdate(update) {
   }
 }
 
-// ================== VERCEL HANDLER ==================
+// ---------- Vercel handler ----------
 export default async function handler(req, res) {
   if (req.method === "GET") {
     return res.status(200).send("Webhook aktif ✅ (GET)");
@@ -271,8 +267,7 @@ export default async function handler(req, res) {
       console.log("Update dari Telegram:", JSON.stringify(update));
       await handleUpdate(update);
     } catch (err) {
-      console.error("Error di handler:", err);
-      // tetap balas 200 supaya Telegram nggak spam error
+      console.error("Error di webhook:", err);
     }
     return res.status(200).send("ok");
   }

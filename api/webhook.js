@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const SPREADSHEET_ID = process.env.SPRE ADSHEET_ID;
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID; // ← jangan salah ketik
 const GS_CREDS_JSON = process.env.GS_CREDS_JSON;
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
@@ -40,7 +40,7 @@ function formatWIB(dateObj) {
 
 // ---------- LOGIC UTAMA ----------
 async function handleUpdate(update) {
-  // /minta_pin
+  // ========== /minta_pin ==========
   if (update.message && update.message.text === "/minta_pin") {
     const chatId = update.message.chat.id;
     await sendMessage(chatId, "Masukkan nama ODC (format ODC-STO-XX):", {
@@ -49,7 +49,7 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Reply nama ODC
+  // ========== REPLY NAMA ODC ==========
   if (
     update.message &&
     update.message.reply_to_message &&
@@ -76,7 +76,7 @@ async function handleUpdate(update) {
       return;
     }
 
-    // belum tampilkan PIN di sini
+    // BELUM tampilkan PIN di sini
     const keyboard = {
       inline_keyboard: [
         [{ text: "VALIDASI ODC", callback_data: `REQ|VALIDASI ODC|${odcName}` }],
@@ -94,20 +94,22 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Callback pilihan keperluan
+  // ========== CALLBACK PILIH KEPERLUAN ==========
   if (update.callback_query) {
     const cb = update.callback_query;
     const data = cb.data || "";
     if (!data.startsWith("REQ|")) return;
 
-    const [_, keperluan, odcName] = data.split("|");
+    const parts = data.split("|");
+    const keperluan = parts[1];
+    const odcName = parts[2];
     const chatId = cb.from.id;
     const nama = cb.from.first_name || "-";
     const durasiJam = DURASI_JAM[keperluan] || 2;
 
     const sheets = await getSheetsClient();
 
-    // Ambil PIN SEKARANG dari odc_master (baru di sini)
+    // Ambil PIN SEKARANG dari odc_master (BARU di sini)
     const odcRes = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: "odc_master!A:B",
@@ -125,7 +127,7 @@ async function handleUpdate(update) {
     const nowIso = now.toISOString();
     const expireIso = expire.toISOString();
 
-    // catat log ke log_request_pin
+    // catat log ke log_request_pin (A–L)
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
       range: "log_request_pin!A:L",
@@ -133,24 +135,24 @@ async function handleUpdate(update) {
       requestBody: {
         values: [
           [
-            waktuNowWIB, // A
-            chatId, // B
-            nama, // C
-            odcName, // D
-            keperluan, // E
-            pinSekarang, // F
-            expireWIB, // G
-            "PENDING", // H
-            nowIso, // I
-            expireIso, // J
-            "", // K WARNING_SENT
-            "", // L ADMIN_NOTIFIED
+            waktuNowWIB, // A: TANGGAL_WIB
+            chatId, // B: ID_TELEGRAM
+            nama, // C: NAMA
+            odcName, // D: NAMA_ODC
+            keperluan, // E: KEPERLUAN
+            pinSekarang, // F: PIN_DIBUKA
+            expireWIB, // G: EXPIRE_WIB
+            "PENDING", // H: STATUS
+            nowIso, // I: OPEN_TIME_ISO
+            expireIso, // J: EXPIRE_ISO
+            "", // K: WARNING_SENT
+            "", // L: ADMIN_NOTIFIED
           ],
         ],
       },
     });
 
-    // kirim PIN + info ke user
+    // kirim PIN + info ke teknisi
     await sendMessage(
       chatId,
       `✅ Permintaan dicatat.\n` +
@@ -163,16 +165,17 @@ async function handleUpdate(update) {
       { parse_mode: "Markdown" }
     );
 
-    // jawaban callback
+    // jawab callback
     await fetch(TELEGRAM_API + "/answerCallbackQuery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callback_query_id: cb.id }),
     });
+
     return;
   }
 
-  // /selesai
+  // ========== /selesai ==========
   if (update.message && update.message.text === "/selesai") {
     const chatId = update.message.chat.id;
     const sheets = await getSheetsClient();
@@ -218,6 +221,7 @@ async function handleUpdate(update) {
       range: "odc_master!A:C",
     });
     const odcRows = odcRes.data.values || [];
+
     let odcRowIndex = -1;
     for (let i = 0; i < odcRows.length; i++) {
       if ((odcRows[i][0] || "").toUpperCase() === odcName.toUpperCase()) {

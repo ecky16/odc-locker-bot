@@ -1,20 +1,17 @@
-import express from "express";
-import bodyParser from "body-parser";
+export default async function handler(req, res) {
+  if (req.method === "GET") {
+    // buat cek cepat di browser
+    return res.status(200).send("Webhook aktif ✅ (GET)");
+  }
 
-const app = express();
-app.use(bodyParser.json());
+  if (req.method === "POST") {
+    // ini dipanggil Telegram setiap ada pesan/update
+    console.log("Update dari Telegram:", JSON.stringify(req.body, null, 2));
 
-// tes GET
-app.get("/", (req, res) => {
-  res.status(200).send("Webhook aktif ✅");
-});
+    // WAJIB balas 200 ke Telegram
+    return res.status(200).send("ok");
+  }
 
-// tangani POST dari Telegram
-app.post("/", (req, res) => {
-  console.log("Update dari Telegram:", JSON.stringify(req.body, null, 2));
-
-  // penting! Telegram butuh respon 200 OK secepatnya
-  res.status(200).send("ok");
-});
-
-export default app;
+  // selain GET/POST, yaudah
+  return res.status(200).end();
+}

@@ -95,7 +95,7 @@ export default async function handler(req, res) {
       const rowNum = i + 1;
 
       // 30 menit -> warning ke teknisi
-      if (diffMinutes >= 30 && !warningSent) {
+      if (diffMinutes >= 1 && !warningSent) {
         await sendMessage(
           chatId,
           `⚠️ *Peringatan Waktu Buka ODC*\n\n` +

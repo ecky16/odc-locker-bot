@@ -1,11 +1,5 @@
-//import { google } from "googleapis";
+import { google } from "googleapis";
 
-export default async function handler(req, res) {
-  if (req.method === "GET") {
-    return res.status(200).send("Webhook aktif tanpa googleapis ✅");
-  }
-  return res.status(200).send("ok");
-}
 
 
 const BOT_TOKEN = process.env.BOT_TOKEN;

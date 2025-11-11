@@ -1,9 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/check-odc",
-      "schedule": "*/5 * * * *"
-    }
-  ]
-}
-
